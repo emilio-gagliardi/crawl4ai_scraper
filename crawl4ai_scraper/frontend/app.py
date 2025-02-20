@@ -175,6 +175,32 @@ def main():
                 help="Maximum random delay variation"
             )
 
+        # Extraction Strategy
+        st.subheader("Extraction Strategy")
+        extraction_type = st.selectbox(
+            "Strategy Type",
+            options=["llm", "css", "xpath"],
+            help="Choose how to extract data from the pages"
+        )
+
+        if extraction_type == "llm":
+            extraction_instruction = st.text_area(
+                "Extraction Instructions",
+                value="Extract structured data from the content.",
+                help="Instructions for the LLM on how to extract data"
+            )
+            extraction_schema = st.text_area(
+                "JSON Schema",
+                value='{"title": "str", "content": "str"}',
+                help="JSON schema defining the structure of extracted data"
+            )
+        elif extraction_type in ["css", "xpath"]:
+            extraction_schema = st.text_area(
+                "Selector Schema",
+                value='{"title": ".article-title", "content": ".article-content"}',
+                help=f"JSON mapping of fields to {extraction_type} selectors"
+            )
+
         # URL Input
         st.subheader("URLs to Scrape")
         url_input = st.text_area(
@@ -188,6 +214,13 @@ def main():
             urls = [url.strip() for url in url_input.split("\n") if url.strip()]
             if not urls:
                 st.error("Please enter at least one URL")
+                return
+
+            try:
+                # Parse extraction schema
+                schema = json.loads(extraction_schema)
+            except json.JSONDecodeError:
+                st.error("Invalid JSON schema")
                 return
 
             # Build configuration
@@ -207,8 +240,13 @@ def main():
                     "excluded_selector": excluded_selector or None,
                     "mean_delay": mean_delay,
                     "max_range": max_range
-                }
+                },
+                "extraction_type": extraction_type,
+                "extraction_schema": schema
             }
+
+            if extraction_type == "llm":
+                config["extraction_instruction"] = extraction_instruction
 
             # Start scraping
             try:
@@ -219,8 +257,9 @@ def main():
                 if response.ok:
                     result = response.json()
                     st.success(f"Scraping completed! Results saved to: {result['output_dir']}")
+                    st.json(result)  # Show full result details
                 else:
-                    st.error("Failed to start scraping")
+                    st.error(f"Failed to start scraping: {response.text}")
             except Exception as e:
                 st.error(f"Error: {str(e)}")
 

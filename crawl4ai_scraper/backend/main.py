@@ -3,6 +3,9 @@ from pydantic import BaseModel
 import os
 from crawl4ai_scraper.backend.custom_scraper import MicrosoftKbScraper
 import logging
+from fastapi.middleware.cors import CORSMiddleware
+from .api import credentials, scrape
+from .database import engine, Base
 
 # Configure logging
 logging.basicConfig(
@@ -11,11 +14,27 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Create database tables
+Base.metadata.create_all(bind=engine)
+
 app = FastAPI(
     title="KB Article Scraper API",
     description="API for scraping Microsoft Knowledge Base articles.",
     version="0.1.0",
 )
+
+# Configure CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, replace with specific origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Include routers
+app.include_router(credentials.router)
+app.include_router(scrape.router)
 
 class ScrapeRequest(BaseModel):
     """
@@ -60,3 +79,7 @@ async def scrape(request: ScrapeRequest) -> dict:
     except Exception as e:
         logger.error(f"Error during scraping: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/")
+async def root():
+    return {"message": "Crawl4AI Scraper API"}
