@@ -1,1 +1,20 @@
-# Placeholder for the Docker Compose configuration.
+version: "3.9"
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: docker/backend/Dockerfile
+    ports:
+      - "8080:8000"
+    environment:
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+    volumes:
+      - ./application/data:/app/application/data
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend/Dockerfile
+    ports:
+      - "8502:8501"
+    depends_on:
+      - backend

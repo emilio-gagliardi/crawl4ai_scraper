@@ -2,11 +2,9 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-COPY backend /app/backend
+COPY frontend /app/frontend
 COPY requirements.txt /app/
-COPY config.yaml /app/
 
 RUN pip install -r requirements.txt
-RUN crawl4ai-setup
 
-CMD ["python", "backend/main.py"]
+CMD ["streamlit", "run", "frontend/app.py"]

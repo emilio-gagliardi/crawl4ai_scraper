@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://crawl4ai:crawl4ai@db:5432/crawl4ai
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - db
+
+  frontend:
+    build: 
+      context: .
+      dockerfile: frontend/Dockerfile
+    ports:
+      - "8502:8502"
+    environment:
+      - API_URL=http://app:8000
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - app
+
+  db:
+    image: postgres:15
+    environment:
+      - POSTGRES_USER=crawl4ai
+      - POSTGRES_PASSWORD=crawl4ai
+      - POSTGRES_DB=crawl4ai
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+volumes:
+  postgres_data: 
