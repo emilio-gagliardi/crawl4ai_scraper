@@ -36,6 +36,8 @@ secrets/
 # Logs
 logs/
 *.log
+data/logs/
+data/logs/**/*
 
 # IDE
 .idea/
