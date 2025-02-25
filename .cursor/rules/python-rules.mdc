@@ -1,0 +1,35 @@
+---
+description: The python coding guidelines to use including any user specific preferences
+globs: *.py
+---
+#Python ruleset
+
+Use stable industry standards, but choose to allow modern updates if it helps the project be future facing.
+
+## pep8
+- adhere to pep8 as much as possible
+
+## flake8
+I have specified a [.flake8](mdc:.flake8) file with some helpful exceptions
+
+## variables
+- snake case for variables
+- Camel case for Classes
+
+## Type hints
+- always use them
+
+## Functions
+- always type hint
+- always docstring
+
+# Object oriented vs procedural style
+- I prefer a procedural style but want to leverage the power of classes and oop when it is appropriate. Minimize the inheritance hierarchy to keep things simple at first. 
+- use pydantic to move data through the application where appropriate. When pydantic is used to model a data structure, update the [guidance.md](mdc:guidance.md) file.
+- for data operations that occur in loops use object mapping, for one off data manipulations you can use SQL or Cypher or whatever the native query language is.
+
+# Start explicit iterate to optimize
+I'm not the brightest programmer, when initially developing code, prefer more explicit code solutions with inline comments to help me understand. Once the code is working, we can refactor for conciseness.
+
+
+

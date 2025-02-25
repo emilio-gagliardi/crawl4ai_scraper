@@ -6,44 +6,49 @@ services:
     image: postgres:15
     container_name: url_scraper-db
     environment:
-      - POSTGRES_USER=${POSTGRES_USER:-crawl4ai}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-crawl4ai}
-      - POSTGRES_DB=${POSTGRES_DB:-crawl4ai}
+      - POSTGRES_USER_FILE=/run/secrets/postgres_user
+      - POSTGRES_PASSWORD_FILE=/run/secrets/postgres_password
+      - POSTGRES_DB_FILE=/run/secrets/postgres_db
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
       - "5434:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-crawl4ai}"]
+      test: ["CMD-SHELL", "pg_isready -U $(cat /run/secrets/postgres_user)"]
       interval: 5s
       timeout: 5s
       retries: 5
     networks:
       - crawl4ai-network
+    secrets:
+      - postgres_user
+      - postgres_password
+      - postgres_db
 
   backend:
     build:
       context: .
       dockerfile: docker/backend/Dockerfile
-      args:
-        - DATABASE_URL=${DATABASE_URL:-postgresql://${POSTGRES_USER:-crawl4ai}:${POSTGRES_PASSWORD:-crawl4ai}@db:5432/${POSTGRES_DB:-crawl4ai}}
     container_name: url_scraper-backend
     ports:
       - "8002:8002"
     environment:
-      - DATABASE_URL=${DATABASE_URL:-postgresql://${POSTGRES_USER:-crawl4ai}:${POSTGRES_PASSWORD:-crawl4ai}@db:5432/${POSTGRES_DB:-crawl4ai}}
-      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - DATABASE_URL=postgresql://$(cat /run/secrets/postgres_user):$(cat /run/secrets/postgres_password)@db:5432/$(cat /run/secrets/postgres_db)
+      - ENCRYPTION_KEY_FILE=/run/secrets/encryption_key
     volumes:
-      - ./crawl4ai_scraper:/app/crawl4ai_scraper
       - ./data:/app/data
       - shared_storage:/app/shared
-    command: ["uvicorn", "crawl4ai_scraper.main:app", "--host", "0.0.0.0", "--port", "8002", "--reload"]
     depends_on:
       db:
         condition: service_healthy
     networks:
       - crawl4ai-network
     restart: unless-stopped
+    secrets:
+      - postgres_user
+      - postgres_password
+      - postgres_db
+      - encryption_key
 
   frontend:
     build:
@@ -53,9 +58,8 @@ services:
     ports:
       - "8502:8502"
     environment:
-      - API_URL=${API_URL:-http://backend:8002}
+      - API_URL=http://backend:8002
     volumes:
-      - ./crawl4ai_scraper:/app/crawl4ai_scraper
       - ./data:/app/data
       - shared_storage:/app/shared
     depends_on:
@@ -74,3 +78,13 @@ volumes:
     name: url_scraper-postgres-data
   shared_storage:
     name: url_scraper-shared-storage
+
+secrets:
+  postgres_user:
+    file: ./secrets/postgres_user.txt
+  postgres_password:
+    file: ./secrets/postgres_password.txt
+  postgres_db:
+    file: ./secrets/postgres_db.txt
+  encryption_key:
+    file: ./secrets/encryption_key.txt

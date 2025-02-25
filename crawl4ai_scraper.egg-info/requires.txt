@@ -1,0 +1,4 @@
+sqlmodel
+alembic
+psycopg2-binary
+python-dotenv

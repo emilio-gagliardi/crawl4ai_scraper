@@ -1,69 +1,153 @@
 from datetime import datetime
-from typing import Optional
-from sqlalchemy import Column, Integer, String, DateTime, Text, Boolean
-from sqlalchemy.ext.declarative import declarative_base
-from cryptography.fernet import Fernet
-import os
+from typing import Dict, List, Optional
 
-Base = declarative_base()
+import pytz
+from sqlalchemy import Column, Text, func
+from sqlmodel import JSON, Field, SQLModel
 
-class LLMCredentials(Base):
-    """Model for storing LLM provider credentials securely."""
-    __tablename__ = 'llm_credentials'
 
-    id = Column(Integer, primary_key=True)
-    provider_name = Column(String(255), nullable=False)  # e.g. "OpenAI", "Anthropic"
-    model_name = Column(String(255), nullable=False)     # e.g. "gpt-4", "claude-2"
-    api_key = Column(Text, nullable=False)               # Encrypted API key
-    is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+class Credentials(SQLModel, table=True):
+    """
+    Database model for storing LLM provider credentials.
 
-    @property
-    def provider_identifier(self) -> str:
-        """Get the full provider identifier used by crawl4ai."""
-        return f"{self.provider_name.lower()}/{self.model_name}"
+    Stores encrypted API keys and tracks which credential set is currently active.
+    Only one set of credentials can be active at a time.
+    """
 
-    def encrypt_api_key(self, api_key: str) -> None:
-        """Encrypt the API key before storing."""
-        fernet = Fernet(os.getenv('ENCRYPTION_KEY').encode())
-        self.api_key = fernet.encrypt(api_key.encode()).decode()
+    __tablename__ = "credentials"
 
-    def decrypt_api_key(self) -> str:
-        """Decrypt the stored API key."""
-        fernet = Fernet(os.getenv('ENCRYPTION_KEY').encode())
-        return fernet.decrypt(self.api_key.encode()).decode()
+    id: Optional[int] = Field(default=None, primary_key=True)
+    provider: str = Field(..., description="Name of the LLM provider")
+    model: str = Field(..., description="Name of the specific model")
+    api_key: str = Field(..., description="Encrypted API key")
+    is_active: bool = Field(
+        default=True,
+        description="Whether these credentials are currently active",
+        sa_column_kwargs={"server_default": "true"},
+    )
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(pytz.UTC),
+        description="When these credentials were created",
+        sa_column_kwargs={"server_default": func.now()},
+    )
+    updated_at: Optional[datetime] = Field(
+        default_factory=lambda: datetime.now(pytz.UTC),
+        description="When these credentials were last updated",
+        sa_column_kwargs={"server_default": func.now()},
+    )
 
-class ProviderModel(Base):
-    """Model for storing available LLM providers and their models."""
-    __tablename__ = 'provider_models'
 
-    id = Column(Integer, primary_key=True)
-    provider_name = Column(String(255), nullable=False)
-    model_name = Column(String(255), nullable=False)
-    description = Column(Text)
-    is_available = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+class ScrapeJob(SQLModel, table=True):
+    """
+    Database model for web scraping jobs.
 
-    class Config:
-        """Sample configurations for different providers."""
-        SUPPORTED_PROVIDERS = {
-            "openai": {
-                "models": ["gpt-4", "gpt-3.5-turbo"],
-                "base_url": "https://api.openai.com/v1"
-            },
-            "anthropic": {
-                "models": ["claude-2", "claude-instant"],
-                "base_url": "https://api.anthropic.com/v1"
-            },
-            "openrouter": {
-                "models": [
-                    "google/gemini-2.0-pro-exp-02-05:free",
-                    "google/gemini-1.0-pro",
-                    "anthropic/claude-2",
-                    "openai/gpt-4"
-                ],
-                "base_url": "https://openrouter.ai/api/v1"
-            }
-        } 
+    Represents a URL to be scraped and tracks the progress and results of the scraping operation.
+    """
+
+    __tablename__ = "scrape_jobs"
+
+    id: int = Field(default=None, primary_key=True)
+    url: str = Field(..., description="URL to scrape")
+    status: str = Field(
+        ...,
+        description=(
+            "Current status of the scrape job (pending, processing, completed,"
+            " failed)"
+        ),
+    )
+    output_path: Optional[str] = Field(
+        default=None, description="Path where scraping results are saved"
+    )
+    error_message: Optional[str] = Field(
+        sa_column=Column(Text),
+        description="Error message if the scraping failed",
+    )
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(pytz.UTC),
+        description="When this job was created",
+        sa_column_kwargs={"server_default": func.now()},
+    )
+    updated_at: Optional[datetime] = Field(
+        default_factory=lambda: datetime.now(pytz.UTC),
+        description="When this job was last updated",
+        sa_column_kwargs={"server_default": func.now()},
+    )
+    completed_at: Optional[datetime] = Field(
+        default=None, description="When this job was completed"
+    )
+
+
+class ScrapeResult(SQLModel, table=True):
+    """
+    Database model for storing scraping results.
+
+    Contains the extracted and processed content from a scrape job, including
+    cleaned HTML, markdown conversion, structured data extraction, and any
+    generated files (PDFs, screenshots).
+    """
+
+    __tablename__ = "scrape_results"
+
+    id: int = Field(default=None, primary_key=True)
+    scrape_job_id: int = Field(
+        ...,
+        foreign_key="scrape_jobs.id",
+        description="ID of the associated scrape job",
+    )
+    cleaned_html: Optional[str] = Field(
+        sa_column=Column(Text),
+        description="Cleaned HTML content with unwanted elements removed",
+    )
+    markdown: Optional[str] = Field(
+        sa_column=Column(Text),
+        description="Content converted to markdown format",
+    )
+    extracted_json: Optional[str] = Field(
+        sa_column=Column(Text),
+        description="Structured data extracted from the content",
+    )
+    pdf_path: Optional[str] = Field(
+        default=None, description="Path to the generated PDF file"
+    )
+    screenshot_path: Optional[str] = Field(
+        default=None, description="Path to the captured screenshot"
+    )
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(pytz.UTC),
+        description="When this result was created",
+        sa_column_kwargs={"server_default": func.now()},
+    )
+
+
+class ScrapeMetadata(SQLModel, table=True):
+    """High-level metadata about a scrape operation"""
+
+    __tablename__ = "scrape_metadata"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    job_id: str = Field(index=True)
+    user_id: str = Field(index=True)  # For future multi-user support
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    urls: List[str] = Field(sa_type=JSON)
+    config: Dict = Field(sa_type=JSON)
+    status: str = Field(
+        default="pending"
+    )  # pending, running, completed, failed
+    error: Optional[str] = None
+    total_urls: int
+    successful_urls: int = Field(default=0)
+    failed_urls: int = Field(default=0)
+
+
+class ScrapeData(SQLModel, table=True):
+    """Detailed results from a scrape operation"""
+
+    __tablename__ = "scrape_data"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    scrape_id: int = Field(foreign_key="scrape_metadata.id", index=True)
+    url: str
+    content: Optional[str]
+    page_metadata: Dict = Field(sa_type=JSON)
+    error: Optional[str]
+    created_at: datetime = Field(default_factory=datetime.utcnow)

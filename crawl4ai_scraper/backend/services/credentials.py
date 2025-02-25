@@ -1,132 +1,102 @@
-from typing import List, Optional, Dict, Any
-from sqlalchemy.orm import Session
-from sqlalchemy.exc import SQLAlchemyError
-import logging
-from ..models import LLMCredentials, ProviderModel
-from datetime import datetime
+import os
+from typing import Optional
 
-logger = logging.getLogger(__name__)
+from cryptography.fernet import Fernet
+from dotenv import load_dotenv
+from sqlmodel import Session, select
+
+from ..models import Credentials
+from ..utils.encryption import decrypt_value, encrypt_value, get_encryption_key
+
+# Load environment variables
+load_dotenv()
+
+# Initialize Fernet for encryption/decryption
+fernet = Fernet(get_encryption_key())
+
 
 class CredentialsService:
     """Service for managing LLM provider credentials."""
 
     def __init__(self, db: Session):
+        """Initialize the service with a database session.
+
+        Args:
+            db (Session): SQLModel database session
+        """
         self.db = db
 
-    def get_active_credentials(self) -> Optional[LLMCredentials]:
-        """Get the currently active credentials."""
-        try:
-            return self.db.query(LLMCredentials)\
-                .filter(LLMCredentials.is_active == True)\
-                .first()
-        except SQLAlchemyError as e:
-            logger.error(f"Database error while fetching active credentials: {str(e)}")
-            return None
+    def create_credentials(
+        self, provider: str, model: str, api_key: str
+    ) -> Credentials:
+        """Create new credentials and store them encrypted.
 
-    def save_credentials(
-        self,
-        provider_name: str,
-        model_name: str,
-        api_key: str
-    ) -> Optional[LLMCredentials]:
-        """Save new credentials and make them active."""
-        try:
-            # Deactivate any existing credentials
-            self.db.query(LLMCredentials)\
-                .filter(LLMCredentials.is_active == True)\
-                .update({"is_active": False})
+        Args:
+            provider: Name of the LLM provider
+            model: Name of the model
+            api_key: API key to encrypt and store
 
-            # Create new credentials
-            creds = LLMCredentials(
-                provider_name=provider_name,
-                model_name=model_name,
-                is_active=True
-            )
-            creds.encrypt_api_key(api_key)
+        Returns:
+            Credentials: The created credentials object
+        """
+        # Encrypt the API key
+        encrypted_key = encrypt_value(api_key)
 
-            self.db.add(creds)
-            self.db.commit()
-            return creds
-        except SQLAlchemyError as e:
-            logger.error(f"Database error while saving credentials: {str(e)}")
-            self.db.rollback()
-            return None
+        # Deactivate any existing active credentials
+        statement = select(Credentials).where(Credentials.is_active)
+        active_creds = self.db.exec(statement).first()
+        if active_creds:
+            active_creds.is_active = False
+            self.db.add(active_creds)
 
-    def update_credentials(
-        self,
-        cred_id: int,
-        api_key: str
-    ) -> Optional[LLMCredentials]:
-        """Update existing credentials with a new API key."""
-        try:
-            creds = self.db.query(LLMCredentials)\
-                .filter(LLMCredentials.id == cred_id)\
-                .first()
-            
-            if not creds:
-                return None
+        # Create new credentials
+        credentials = Credentials(
+            provider=provider,
+            model=model,
+            api_key=encrypted_key,
+            is_active=True,
+        )
+        self.db.add(credentials)
+        self.db.commit()
+        self.db.refresh(credentials)
 
-            creds.encrypt_api_key(api_key)
-            creds.updated_at = datetime.utcnow()
-            
-            self.db.commit()
-            return creds
-        except SQLAlchemyError as e:
-            logger.error(f"Database error while updating credentials: {str(e)}")
-            self.db.rollback()
-            return None
+        return credentials
 
-    def delete_credentials(self, cred_id: int) -> bool:
-        """Delete credentials by ID."""
-        try:
-            result = self.db.query(LLMCredentials)\
-                .filter(LLMCredentials.id == cred_id)\
-                .delete()
-            self.db.commit()
-            return result > 0
-        except SQLAlchemyError as e:
-            logger.error(f"Database error while deleting credentials: {str(e)}")
-            self.db.rollback()
+    def get_active_credentials(self) -> Optional[Credentials]:
+        """Get the currently active credentials.
+
+        Returns:
+            Optional[Credentials]: Active credentials if they exist
+        """
+        statement = select(Credentials).where(Credentials.is_active)
+        return self.db.exec(statement).first()
+
+    def decrypt_api_key(self, credentials: Credentials) -> Optional[str]:
+        """Decrypt the API key from credentials.
+
+        Args:
+            credentials: Credentials object containing encrypted API key
+
+        Returns:
+            Optional[str]: Decrypted API key, or None if decryption fails
+        """
+        return decrypt_value(credentials.api_key)
+
+    def deactivate_credentials(self, credentials_id: int) -> bool:
+        """Deactivate specific credentials.
+
+        Args:
+            credentials_id: ID of credentials to deactivate
+
+        Returns:
+            bool: True if successful, False if credentials not found
+        """
+        statement = select(Credentials).where(Credentials.id == credentials_id)
+        credentials = self.db.exec(statement).first()
+        if not credentials:
             return False
 
-    def get_available_providers(self) -> List[Dict[str, Any]]:
-        """Get list of available providers and their models."""
-        try:
-            providers = self.db.query(ProviderModel)\
-                .filter(ProviderModel.is_available == True)\
-                .all()
-            
-            return [
-                {
-                    "provider_name": p.provider_name,
-                    "model_name": p.model_name,
-                    "description": p.description
-                }
-                for p in providers
-            ]
-        except SQLAlchemyError as e:
-            logger.error(f"Database error while fetching providers: {str(e)}")
-            return []
-
-    def initialize_providers(self) -> None:
-        """Initialize the provider_models table with supported providers."""
-        try:
-            # Check if we already have providers
-            if self.db.query(ProviderModel).count() > 0:
-                return
-
-            # Add supported providers from config
-            for provider, config in ProviderModel.Config.SUPPORTED_PROVIDERS.items():
-                for model in config["models"]:
-                    provider_model = ProviderModel(
-                        provider_name=provider,
-                        model_name=model,
-                        description=f"{provider.title()} {model} model",
-                        is_available=True
-                    )
-                    self.db.add(provider_model)
-            
-            self.db.commit()
-        except SQLAlchemyError as e:
-            logger.error(f"Database error while initializing providers: {str(e)}")
-            self.db.rollback() 
+        credentials.is_active = False
+        self.db.add(credentials)
+        self.db.commit()
+        return True

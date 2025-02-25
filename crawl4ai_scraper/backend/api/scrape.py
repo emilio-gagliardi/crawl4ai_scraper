@@ -1,89 +1,155 @@
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
-from typing import List, Dict, Any
-from pydantic import BaseModel
+from sqlmodel import Session
+
 from ..database import get_db
+from ..schemas import (
+    APIStatusCode,
+    ResponseStatus,
+    ScrapeRequest,
+    ScrapeResponse,
+)
 from ..services.credentials import CredentialsService
-from ..custom_scraper import GenericWebScraper
-import asyncio
+from ..services.custom_scraper import GenericWebScraper
 
 router = APIRouter(prefix="/api/scrape", tags=["scrape"])
 
-class BrowserConfig(BaseModel):
-    browser_type: str
-    headless: bool
-    viewport_width: int
-    viewport_height: int
 
-class CrawlerConfig(BaseModel):
-    word_count_threshold: int
-    exclude_external_links: bool
-    wait_until: str
-    css_selector: str | None
-    excluded_tags: List[str]
-    excluded_selector: str | None
-    mean_delay: float
-    max_range: float
-
-class ScrapeRequest(BaseModel):
-    urls: List[str]
-    config: Dict[str, Any]
-
-@router.post("/")
+@router.post(
+    "/",
+    response_model=ScrapeResponse,
+    responses={
+        200: {
+            "description": "Successfully completed scraping",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "status": "success",
+                        "message": "Scraping completed successfully",
+                        "code": 200,
+                        "data": {
+                            "job_id": "job_12345678",
+                            "results": {
+                                "https://example.com": {
+                                    "content": "Extracted content...",
+                                    "metadata": {
+                                        "title": "Example Page",
+                                        "word_count": 500,
+                                    },
+                                }
+                            },
+                            "errors": None,
+                        },
+                    }
+                }
+            },
+        },
+        400: {
+            "description": "Invalid request",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "status": "error",
+                        "message": "Failed to scrape: Invalid URL format",
+                        "code": 400,
+                        "data": None,
+                    }
+                }
+            },
+        },
+        401: {
+            "description": "Unauthorized",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "status": "error",
+                        "message": "Failed to decrypt API key",
+                        "code": 401,
+                        "data": None,
+                    }
+                }
+            },
+        },
+    },
+)
 async def scrape_urls(
-    request: ScrapeRequest,
-    db: Session = Depends(get_db)
-) -> Dict[str, Any]:
+    request: ScrapeRequest, db: Session = Depends(get_db)
+) -> ScrapeResponse:
     """
     Scrape URLs using the provided configuration.
     Uses active LLM credentials if extraction strategy requires them.
+
+    Args:
+        request: Scraping configuration containing:
+            - urls: List of URLs to scrape
+            - config: Dictionary with browser and crawler settings
+        db: Database session
+
+    Returns:
+        ScrapeResponse containing:
+        - job_id: Unique identifier for this scrape operation
+        - results: Dictionary of results for each URL
+        - errors: Optional dictionary of errors for failed URLs
     """
     try:
         # Get active credentials if they exist
         creds_service = CredentialsService(db)
         active_creds = creds_service.get_active_credentials()
-        
+
         # If using LLM extraction, ensure we have credentials
         extraction_config = None
         if active_creds:
+            api_key = creds_service.decrypt_api_key(active_creds)
+            if not api_key:
+                return ScrapeResponse(
+                    status=ResponseStatus.ERROR,
+                    message="Failed to decrypt API key",
+                    code=APIStatusCode.UNAUTHORIZED,
+                    data=None,
+                )
             extraction_config = {
-                "type": "llm",
-                "provider": active_creds.provider_identifier,
-                "api_token": active_creds.decrypt_api_key(),
-                "schema": request.config.get("extraction_schema", {}),
-                "instruction": request.config.get("extraction_instruction", "Extract structured data from the content.")
+                "provider": active_creds.provider,
+                "model": active_creds.model,
+                "api_key": api_key,
             }
-        
-        # Initialize scraper with provided configuration
+
+        # Initialize scraper with config
         scraper = GenericWebScraper(
-            browser_config=request.config["browser_config"],
-            crawler_config=request.config["crawler_config"],
-            extraction_config=extraction_config
+            browser_config=request.config.get("browser", {}),
+            crawler_config=request.config.get("crawler", {}),
+            extraction_config=extraction_config,
         )
-        
-        # Process URLs
-        results = await scraper.bulk_scrape(request.urls)
-        
-        # Save results
-        output_dir = await scraper.save_results(results)
-        
-        if not output_dir:
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to save scraping results"
-            )
-        
-        return {
-            "message": "Scraping completed successfully",
-            "output_dir": output_dir,
-            "processed_urls": len(results)
-        }
-        
+
+        # Scrape URLs
+        results = {}
+        errors = {}
+        for url in request.urls:
+            try:
+                result = await scraper.scrape(url)
+                results[url] = result
+            except Exception as e:
+                errors[url] = str(e)
+
+        # Return results
+        return ScrapeResponse(
+            status=ResponseStatus.SUCCESS,
+            message="Scraping completed successfully",
+            code=APIStatusCode.SUCCESS,
+            data={
+                "job_id": "job_" + str(hash(tuple(request.urls)))[:8],
+                "results": results,
+                "errors": errors if errors else None,
+            },
+        )
+
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Scraping failed: {str(e)}"
+        return ScrapeResponse(
+            status=ResponseStatus.ERROR,
+            message=f"Scraping failed: {str(e)}",
+            code=APIStatusCode.INVALID_REQUEST,
+            data=None,
         )
     finally:
         if 'scraper' in locals():
-            await scraper.close() 
+            await scraper.close()

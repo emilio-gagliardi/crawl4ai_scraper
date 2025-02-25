@@ -1,0 +1,8 @@
+Metadata-Version: 2.2
+Name: crawl4ai_scraper
+Version: 0.1.0
+Requires-Dist: sqlmodel
+Requires-Dist: alembic
+Requires-Dist: psycopg2-binary
+Requires-Dist: python-dotenv
+Dynamic: requires-dist
