@@ -46,7 +46,7 @@ class ScrapeJob(SQLModel, table=True):
 
     __tablename__ = "scrape_jobs"
 
-    id: int = Field(default=None, primary_key=True)
+    id: Optional[int] = Field(default=None, primary_key=True)
     url: str = Field(..., description="URL to scrape")
     status: str = Field(
         ...,
@@ -88,7 +88,7 @@ class ScrapeResult(SQLModel, table=True):
 
     __tablename__ = "scrape_results"
 
-    id: int = Field(default=None, primary_key=True)
+    id: Optional[int] = Field(default=None, primary_key=True)
     scrape_job_id: int = Field(
         ...,
         foreign_key="scrape_jobs.id",
@@ -100,21 +100,27 @@ class ScrapeResult(SQLModel, table=True):
     )
     markdown: Optional[str] = Field(
         sa_column=Column(Text),
-        description="Content converted to markdown format",
+        description="Markdown conversion of the cleaned HTML",
     )
-    extracted_json: Optional[str] = Field(
-        sa_column=Column(Text),
-        description="Structured data extracted from the content",
-    )
-    pdf_path: Optional[str] = Field(
-        default=None, description="Path to the generated PDF file"
+    extracted_data: Optional[Dict] = Field(
+        default=None,
+        sa_type=JSON,
+        description="Structured data extracted from the page",
     )
     screenshot_path: Optional[str] = Field(
-        default=None, description="Path to the captured screenshot"
+        default=None, description="Path to the screenshot image"
+    )
+    pdf_path: Optional[str] = Field(
+        default=None, description="Path to the generated PDF"
     )
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(pytz.UTC),
         description="When this result was created",
+        sa_column_kwargs={"server_default": func.now()},
+    )
+    updated_at: Optional[datetime] = Field(
+        default_factory=lambda: datetime.now(pytz.UTC),
+        description="When this result was last updated",
         sa_column_kwargs={"server_default": func.now()},
     )
 
@@ -126,15 +132,13 @@ class ScrapeMetadata(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     job_id: str = Field(index=True)
-    user_id: str = Field(index=True)  # For future multi-user support
+    user_id: str = Field(index=True)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     urls: List[str] = Field(sa_type=JSON)
     config: Dict = Field(sa_type=JSON)
-    status: str = Field(
-        default="pending"
-    )  # pending, running, completed, failed
-    error: Optional[str] = None
-    total_urls: int
+    status: str = Field(default="pending")
+    error: Optional[str] = Field(default=None)
+    total_urls: int = Field(...)
     successful_urls: int = Field(default=0)
     failed_urls: int = Field(default=0)
 
@@ -146,8 +150,8 @@ class ScrapeData(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     scrape_id: int = Field(foreign_key="scrape_metadata.id", index=True)
-    url: str
-    content: Optional[str]
+    url: str = Field(...)
+    content: Optional[str] = Field(sa_column=Column(Text), default=None)
     page_metadata: Dict = Field(sa_type=JSON)
-    error: Optional[str]
+    error: Optional[str] = Field(default=None)
     created_at: datetime = Field(default_factory=datetime.utcnow)

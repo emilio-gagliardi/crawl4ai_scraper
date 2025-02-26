@@ -11,11 +11,13 @@ parent_dir = str(Path(__file__).resolve().parents[1])
 sys.path.append(parent_dir)
 
 # Import your models
-# from crawl4ai_scraper.models import (  # noqa: E402
-#     Credentials,
-#     ScrapeJob,
-#     ScrapeResult,
-# )
+from crawl4ai_scraper.backend.models import (  # noqa: E402
+    Credentials,
+    ScrapeData,
+    ScrapeJob,
+    ScrapeMetadata,
+    ScrapeResult,
+)
 
 config = context.config
 

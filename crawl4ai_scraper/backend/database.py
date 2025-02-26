@@ -8,7 +8,8 @@ load_dotenv()
 
 # Get database URL from environment variable
 DATABASE_URL = os.getenv(
-    "DATABASE_URL", "postgresql://crawl4ai:crawl4ai@db:5432/crawl4ai"
+    "DATABASE_URL",
+    "postgresql://crawl4ai:your_secure_password_here@localhost:5434/crawl4ai",
 )
 
 # Create engine
