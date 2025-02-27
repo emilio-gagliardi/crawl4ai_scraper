@@ -8,13 +8,13 @@ from sqlmodel import Session, SQLModel, create_engine
 logger = logging.getLogger(__name__)
 
 # Print all environment variables for debugging
-logger.info("Environment variables:")
-for key, value in os.environ.items():
-    if key.startswith("POSTGRES_"):
-        if "PASSWORD" in key:
-            logger.info(f"{key}=********")
-        else:
-            logger.info(f"{key}={value}")
+# logger.info("Environment variables:")
+# for key, value in os.environ.items():
+#     if key.startswith("POSTGRES_"):
+#         if "PASSWORD" in key:
+#             logger.info(f"{key}=********")
+#         else:
+#             logger.info(f"{key}={value}")
 
 # Cache environment variables
 DB_USER = os.getenv("POSTGRES_USER")
@@ -26,11 +26,11 @@ DB_PORT = os.getenv(
 )  # Default to 5435 for dev environment
 
 # Print the individual connection parameters (with password masked)
-logger.info(f"DB_USER: {DB_USER}")
-logger.info(f"DB_PASSWORD: {'*' * 8 if DB_PASSWORD else None}")
-logger.info(f"DB_NAME: {DB_NAME}")
-logger.info(f"DB_HOST: {DB_HOST}")
-logger.info(f"DB_PORT: {DB_PORT}")
+# logger.info(f"DB_USER: {DB_USER}")
+# logger.info(f"DB_PASSWORD: {'*' * 8 if DB_PASSWORD else None}")
+# logger.info(f"DB_NAME: {DB_NAME}")
+# logger.info(f"DB_HOST: {DB_HOST}")
+# logger.info(f"DB_PORT: {DB_PORT}")
 
 # Build the database URL from environment variables
 # Use DATABASE_URL if explicitly provided, otherwise build from components
@@ -48,7 +48,7 @@ masked_url = (
 logger.info(f"Connecting to database: {masked_url}")
 
 # Create the SQLAlchemy engine
-engine = create_engine(DATABASE_URL, echo=True)
+engine = create_engine(DATABASE_URL, echo=False)
 
 
 def create_db_and_tables():

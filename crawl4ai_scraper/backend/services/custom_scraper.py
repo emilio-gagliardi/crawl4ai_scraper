@@ -23,15 +23,10 @@ from crawl4ai.extraction_strategy import (
 )
 from pydantic import BaseModel, ValidationError
 
+from ..utils.paths import get_data_dir
+
 # Set up logging
-log_dir = os.path.join(
-    os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-    ),
-    "data",
-    "logs",
-    "scraping",
-)
+log_dir = os.path.join(get_data_dir(), "logs", "scraping")
 os.makedirs(log_dir, exist_ok=True)
 
 log_file_path = os.path.join(log_dir, "scraper.log")
@@ -49,13 +44,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Define default output directory
-DEFAULT_OUTPUT_DIR = os.path.join(
-    os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-    ),
-    "data",
-    "scrapes",
-)
+DEFAULT_OUTPUT_DIR = os.path.join(get_data_dir(), "scrapes")
 
 
 # Define KBArticle schema at module level for reuse
@@ -841,13 +830,7 @@ class MicrosoftKbScraper(BaseScraper):
 
         # Set output directory
         self.output_dir: str = output_dir or os.path.join(
-            os.path.dirname(
-                os.path.dirname(os.path.dirname(__file__))
-            ),  # Go up to microsoft_cve_rag root
-            "application",
-            "data",
-            "scrapes",
-            "kb_articles",
+            get_data_dir(), "scrapes", "kb_articles"
         )
         os.makedirs(self.output_dir, exist_ok=True)
         logger.info(f"Output directory set to: {self.output_dir}")
@@ -1244,10 +1227,7 @@ class GenericWebScraper(BaseScraper):
 
         # Set output directory
         self.output_dir = output_dir or os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-            "data",
-            "scrapes",
-            "generic",
+            get_data_dir(), "scrapes", "generic"
         )
         os.makedirs(self.output_dir, exist_ok=True)
         logger.info(f"Output directory set to: {self.output_dir}")
@@ -1283,12 +1263,20 @@ class GenericWebScraper(BaseScraper):
                     provider_identifier = provider
 
                 # Get API token from config or environment
-                api_token = extraction_config.get("api_key")
-                if not api_token and provider == "openrouter":
-                    api_token = os.getenv("OPENROUTER_API_KEY")
+                api_token = extraction_config.get("api_token")
+                if not api_token:
+                    if provider == "openrouter":
+                        api_token = os.getenv("OPENROUTER_API_KEY")
+                    elif provider == "openai":
+                        api_token = os.getenv("OPENAI_API_KEY")
+                    elif provider == "anthropic":
+                        api_token = os.getenv("ANTHROPIC_API_KEY")
+                    elif provider == "google":
+                        api_token = os.getenv("GOOGLE_API_KEY")
+
                     if not api_token:
                         logger.warning(
-                            "No API token provided for OpenRouter. Check your"
+                            f"No API token provided for {provider}. Check your"
                             " environment variables."
                         )
 
@@ -1305,7 +1293,8 @@ class GenericWebScraper(BaseScraper):
                         "Extract the text from the document and retain"
                         " headings and other structure. Ignore menus and"
                         " footers. The user most likely wants just the core"
-                        " text of the page.",
+                        " text of the page with enough structure to improve"
+                        " readability.",
                     ),
                     chunk_token_threshold=extraction_config.get(
                         "chunk_token_threshold", 2000

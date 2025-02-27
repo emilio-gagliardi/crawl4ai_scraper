@@ -68,6 +68,6 @@ def root():
     """Root endpoint that returns API status."""
     return {
         "status": "success",
-        "message": "Crawl4AI Scraper API is running",
+        "message": "Crawl4AI Scraper API is running. Dev mode is active.",
         "code": 200,
     }
