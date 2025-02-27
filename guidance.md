@@ -277,6 +277,133 @@
    - Test both success and error cases
    - Validate response data against schemas
 
+## Environment Selection
+
+We've implemented multiple ways to select which environment the application runs in:
+
+### 1. Using the `environment.py` File
+
+The simplest way to set the environment is to edit the `environment.py` file in the project root:
+
+```python
+# Set the environment here
+# Options: 'dev' or 'prod'
+ENVIRONMENT = 'dev'  # Change to 'prod' for production
+```
+
+### 2. Using Command-Line Arguments
+
+You can specify the environment when running the application:
+
+```bash
+# Run in development mode
+python run.py --env dev
+
+# Run in production mode
+python run.py --env prod
+```
+
+### 3. Using Environment Variables
+
+You can set the `ENV` environment variable before running the application:
+
+```bash
+# On Windows PowerShell
+$env:ENV="prod"
+python run.py
+
+# On Windows Command Prompt
+set ENV=prod
+python run.py
+```
+
+### Priority Order
+
+The environment is determined in the following order of precedence:
+
+1. Command-line argument (`--env`)
+2. Environment variable (`ENV`)
+3. `environment.py` file
+4. Default to `dev`
+
+This flexible approach allows you to easily switch between environments without modifying code.
+
+## Robust Path Management for Environment Files
+
+To address the fragility of using relative paths with multiple `parent.parent.parent` calls, we've implemented a more robust solution for finding the project root and loading environment files:
+
+### 1. Created a Paths Utility Module
+
+We created a new utility module `paths.py` that provides functions for reliably finding the project root and environment files:
+
+```python
+def get_project_root() -> Path:
+    """
+    Get the absolute path to the project root directory.
+    This is more robust than using relative paths with parent.parent.parent...
+    """
+    # Start from the current file
+    current_path = Path(__file__).resolve()
+    
+    # Navigate up until we find the project root (where we expect to find .env or dev.env)
+    for parent in [current_path, *current_path.parents]:
+        # Check for markers that indicate we're at the project root
+        if (parent / "dev.env").exists() or (parent / ".env").exists() or (parent / "run.py").exists():
+            return parent
+    
+    # If we couldn't find the project root, use a reasonable default
+    return Path(__file__).resolve().parent.parent.parent.parent
+
+def get_env_file_path(env_name: str = None) -> Path:
+    """
+    Get the path to the environment file based on the current environment.
+    """
+    # Determine environment
+    env = env_name or os.getenv("ENV", "dev")
+    env_file = "dev.env" if env == "dev" else ".env"
+    
+    # Return the absolute path to the environment file
+    return get_project_root() / env_file
+```
+
+### 2. Updated All Modules to Use the Paths Utility
+
+Instead of hard-coding relative paths, all modules now use the utility functions:
+
+```python
+from .utils.paths import get_env_file_path
+
+# Determine environment
+ENV = os.getenv("ENV", "dev")
+
+# Load environment variables
+env_path = get_env_file_path(ENV)
+load_dotenv(env_path)
+logger.info(f"Loaded environment from: {env_path}")
+```
+
+### 3. Benefits of This Approach
+
+1. **Resilience to Refactoring**: The code will continue to work even if files are moved or the project structure changes
+2. **Self-Documenting**: The code clearly shows its intent rather than relying on obscure path manipulations
+3. **Centralized Logic**: Path-finding logic is in one place, making it easier to update if needed
+4. **Error Handling**: The utility includes fallback mechanisms if the project root can't be found
+
+### 4. Importing in the Run Script
+
+For the run.py script (which is outside the package), we added the project root to the Python path:
+
+```python
+# Add the project root to the Python path to allow importing from the package
+project_root = Path(__file__).parent
+sys.path.insert(0, str(project_root))
+
+# Import the paths utility
+from crawl4ai_scraper.backend.utils.paths import get_env_file_path
+```
+
+This approach ensures consistent environment loading across all parts of the application without relying on fragile path constructions.
+
 ## Docker Configuration and Best Practices
 
 ### Container Structure
@@ -416,3 +543,222 @@ Note: To whitelist these commands, you'll need to explicitly approve them when t
    - Verify extraction strategy
    - Check output directory permissions
    - Monitor resource usage
+
+## Database Connection and Encryption Key Issues
+
+### Problem Statement
+
+The application is experiencing database connection issues when accessing the `/api/scrape` endpoint. The issue stems from:
+
+1. **Inconsistent Database Connection Strings**:
+   - At startup, the application connects to: `postgresql://crawl4ai:your_secure_password_here@localhost:5434/crawl4ai`
+   - When the `/api/scrape` endpoint is accessed, it attempts to connect to: `localhost:5432` with user `user`
+
+2. **Encryption Key Management**:
+   - The current implementation stores the encryption key in the `.env` file
+   - The encryption module appends to `.env` when generating a new key, potentially causing conflicts
+   - Multiple parts of the application read the `.env` file, leading to inconsistent environment variables
+
+### Proposed Solution
+
+#### 1. Encryption Key Storage
+Move encryption key storage from `.env` to a dedicated file:
+- Store the key in `data/encryption_key.key`
+- Cache the key in memory to prevent repeated file operations
+- Validate the key before use and regenerate if invalid
+
+#### 2. Development Environment Separation
+Create a dedicated development environment:
+- Use `dev.env` for local development configuration
+- Create `docker-compose.dev.yml` for development database only
+- Update `run.py` to explicitly use the development environment
+
+#### 3. Database Connection Caching
+Prevent environment variable reloading:
+- Cache database parameters in `database.py` to prevent re-reading environment
+- Use a single engine instance throughout the application
+- Add explicit debug logging for connection strings
+
+#### 4. Consistent Fernet Instance
+Ensure all parts of the application use the same encryption:
+- Export the Fernet instance from the encryption module
+- Import and use this instance in the credentials service
+
+### Implementation Steps
+
+1. **Update encryption.py**: Store key in a file instead of `.env`
+2. **Create dev.env**: Separate development environment configuration
+3. **Update run.py**: Use development environment file
+4. **Create docker-compose.dev.yml**: Development database configuration
+5. **Update database.py**: Cache connection parameters
+6. **Update credentials.py**: Use shared Fernet instance
+
+### Development Workflow
+
+1. Start only the database container for development:
+   ```
+   docker-compose -f docker-compose.dev.yml up db
+   ```
+
+2. Run the FastAPI app locally:
+   ```
+   python run.py
+   ```
+
+2. **For Production**:
+   ```bash
+   # Set environment to production
+   export ENV=prod
+   
+   # Start all services
+   docker-compose up -d
+   ```
+
+This approach provides flexibility while maintaining consistency across environments.
+
+## Database Connection Issues: Problem and Resolution
+
+### Problem Description
+
+The application was experiencing database connection issues due to conflicts in environment variable settings across multiple locations. Specifically:
+
+1. **Multiple .env Files**: The application had .env files in both the project root and the application root directories, causing conflicts in environment variable values.
+
+2. **Inconsistent Port Configuration**: The Docker container was exposing PostgreSQL on port 5435, but the application was trying to connect to port 5434.
+
+3. **Environment Variable Loading**: Multiple modules were loading environment variables independently without specifying which .env file to use, leading to unpredictable behavior.
+
+4. **Connection String Construction**: The DATABASE_URL was being constructed using environment variables that might have been overridden or set incorrectly.
+
+### Resolution Steps
+
+1. **Removed Nested .env File**: Deleted the .env file in the application root directory (`crawl4ai_scraper/crawl4ai_scraper/.env`) that was setting incorrect database connection parameters.
+
+2. **Standardized Environment File Loading**: Updated all `load_dotenv()` calls to explicitly load from the development environment file (`dev.env`) using absolute paths:
+   ```python
+   load_dotenv(Path(__file__).parent.parent.parent / "dev.env")
+   ```
+
+3. **Hardcoded Critical Connection Parameters**: Ensured the database port was correctly set by hardcoding it in the database.py file:
+   ```python
+   DB_PORT = "5435"  # Hardcoded to match Docker container
+   ```
+
+4. **Forced DATABASE_URL Construction**: Added code to force the DATABASE_URL to use the correct parameters regardless of environment variables:
+   ```python
+   DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+   ```
+
+5. **Updated Port in Development Environment**: Ensured the port in dev.env matched the port exposed by the Docker container (5435).
+
+### Prescriptive Rules for Future FastAPI-Docker Applications
+
+To avoid similar issues in future FastAPI applications with Docker, follow these rules:
+
+1. **Environment File Structure**:
+   - Keep all .env files in the project root directory, not in subdirectories
+   - Use separate files for different environments (dev.env, prod.env, etc.)
+   - Never commit .env files to version control (add to .gitignore)
+
+2. **Docker Configuration**:
+   - Ensure Docker Compose port mappings match the ports specified in environment files
+   - Use consistent naming conventions for services and environment variables
+   - Document port mappings clearly in README.md
+
+3. **Environment Variable Loading**:
+   - Always specify the path to the .env file when calling load_dotenv()
+   - Load environment variables once at application startup, not in multiple modules
+   - Use a centralized configuration module that other modules can import
+
+4. **Connection String Management**:
+   - Construct database connection strings in one place only
+   - Log masked connection strings (hiding passwords) for debugging
+   - Consider using a configuration class to manage connection parameters
+
+5. **Explicit Over Implicit**:
+   - Explicitly set critical configuration parameters rather than relying on defaults
+   - Use environment variable validation to catch configuration errors early
+   - Add debug logging for connection parameters
+
+### Exact Steps for Setting Up a New FastAPI-Docker Application
+
+1. **Project Structure Setup**:
+   ```
+   project_root/
+   ├── app/
+   │   ├── main.py
+   │   ├── database.py
+   │   └── ...
+   ├── docker-compose.yml
+   ├── docker-compose.dev.yml
+   ├── .env.example
+   ├── dev.env
+   └── README.md
+   ```
+
+2. **Environment Configuration**:
+   - Create a `dev.env` file with development settings
+   - Create a `.env.example` file with placeholder values as documentation
+   - Add all .env files to .gitignore except .env.example
+
+3. **Database Connection Setup**:
+   - In `database.py`, load environment variables explicitly:
+     ```python
+     from pathlib import Path
+     from dotenv import load_dotenv
+     
+     # Load environment variables from dev.env
+     load_dotenv(Path(__file__).parent.parent.parent / "dev.env")
+     
+     # Construct DATABASE_URL explicitly
+     DB_USER = os.getenv("POSTGRES_USER")
+     DB_PASSWORD = os.getenv("POSTGRES_PASSWORD")
+     DB_NAME = os.getenv("POSTGRES_DB")
+     DB_HOST = os.getenv("POSTGRES_HOST")
+     DB_PORT = os.getenv("POSTGRES_PORT")
+     
+     DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+     ```
+
+4. **Docker Configuration**:
+   - In `docker-compose.dev.yml`, ensure port mappings match environment variables:
+     ```yaml
+     services:
+       db:
+         image: postgres:15
+         environment:
+           - POSTGRES_USER=${POSTGRES_USER}
+           - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+           - POSTGRES_DB=${POSTGRES_DB}
+         ports:
+           - "${POSTGRES_PORT}:5432"
+     ```
+
+5. **Application Startup**:
+   - In `main.py`, ensure environment variables are loaded before any database operations:
+     ```python
+     import os
+     from pathlib import Path
+     from dotenv import load_dotenv
+     
+     # Load environment variables at startup
+     load_dotenv(Path(__file__).parent.parent.parent / "dev.env")
+     
+     # Import database after loading environment variables
+     from app.database import get_db, create_db_and_tables
+     ```
+
+6. **Testing Connection**:
+   - Add a health check endpoint to verify database connection:
+     ```python
+     @app.get("/health")
+     def health_check(db: Session = Depends(get_db)):
+         try:
+             # Execute a simple query
+             db.execute(text("SELECT 1"))
+             return {"status": "healthy", "database": "connected"}
+         except Exception as e:
+             return {"status": "unhealthy", "database": str(e)}
+     ```
+
+By following these guidelines, you'll avoid the common pitfalls of environment configuration and database connection issues in FastAPI applications with Docker.

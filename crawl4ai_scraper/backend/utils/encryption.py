@@ -1,47 +1,63 @@
 """Encryption utilities for sensitive data."""
 
-import base64
 import os
 from typing import Optional
 
 from cryptography.fernet import Fernet
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
+# Global variable to store the encryption key
+_encryption_key = None
+
+# Global variable to store the Fernet instance
+_fernet = None
 
 
-# Get encryption key from environment or generate one
 def get_encryption_key() -> bytes:
-    """Get or generate the encryption key."""
-    key = os.getenv("ENCRYPTION_KEY")
-    if not key:
-        # Generate a new key if none exists
-        key = Fernet.generate_key()
-        # Save the key to .env file
-        with open(".env", "a") as f:
-            f.write(f"\nENCRYPTION_KEY={key.decode()}")
-    else:
-        # Ensure the key is properly formatted
-        try:
-            # Try to decode and re-encode to validate format
-            key_bytes = key.encode() if isinstance(key, str) else key
-            Fernet(key_bytes)  # This will raise an error if the key is invalid
-            key = key_bytes
-        except Exception:
-            # If the key is invalid, generate a new one
-            key = Fernet.generate_key()
-            # Save the key to .env file
-            with open(".env", "a") as f:
-                f.write(f"\nENCRYPTION_KEY={key.decode()}")
+    """
+    Get the encryption key from the environment or generate a new one.
 
-    return key
+    Returns:
+        bytes: The encryption key
+    """
+    global _encryption_key
+
+    # If we already have the key, return it
+    if _encryption_key:
+        return _encryption_key
+
+    # Try to get the key from the environment
+    key_str = os.getenv("ENCRYPTION_KEY")
+    if key_str:
+        _encryption_key = key_str.encode()
+        return _encryption_key
+
+    # Generate a new key
+    _encryption_key = Fernet.generate_key()
+
+    # Store the key in the environment
+    os.environ["ENCRYPTION_KEY"] = _encryption_key.decode()
+
+    return _encryption_key
 
 
-# Initialize Fernet cipher with the key
-_fernet = Fernet(get_encryption_key())
+def get_fernet() -> Fernet:
+    """
+    Get a Fernet instance for encryption/decryption.
+
+    Returns:
+        Fernet: A Fernet instance
+    """
+    global _fernet
+
+    # If we already have a Fernet instance, return it
+    if _fernet:
+        return _fernet
+
+    # Create a new Fernet instance
+    key = get_encryption_key()
+    _fernet = Fernet(key)
+
+    return _fernet
 
 
 def encrypt_value(value: str) -> str:
@@ -52,26 +68,32 @@ def encrypt_value(value: str) -> str:
         value: The string to encrypt
 
     Returns:
-        str: The encrypted value as a base64 string
+        str: The encrypted string
     """
     if not value:
-        return ""
-    return _fernet.encrypt(value.encode()).decode()
+        return value
+
+    fernet = get_fernet()
+    encrypted = fernet.encrypt(value.encode())
+    return encrypted.decode()
 
 
-def decrypt_value(encrypted_value: str) -> Optional[str]:
+def decrypt_value(value: str) -> Optional[str]:
     """
     Decrypt an encrypted string value.
 
     Args:
-        encrypted_value: The encrypted string to decrypt
+        value: The encrypted string
 
     Returns:
-        Optional[str]: The decrypted value, or None if decryption fails
+        str: The decrypted string, or None if decryption fails
     """
-    if not encrypted_value:
-        return None
+    if not value:
+        return value
+
     try:
-        return _fernet.decrypt(encrypted_value.encode()).decode()
+        fernet = get_fernet()
+        decrypted = fernet.decrypt(value.encode())
+        return decrypted.decode()
     except Exception:
         return None

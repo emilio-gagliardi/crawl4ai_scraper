@@ -1,0 +1,31 @@
+version: '3.8'
+name: url_scraper_dev
+
+services:
+  db:
+    image: postgres:15
+    container_name: url_scraper-db-dev
+    environment:
+      - POSTGRES_USER=crawl4ai
+      - POSTGRES_PASSWORD=your_secure_password_here
+      - POSTGRES_DB=crawl4ai
+    volumes:
+      - postgres_data_dev:/var/lib/postgresql/data
+    ports:
+      - "5435:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crawl4ai"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - crawl4ai-network-dev
+
+networks:
+  crawl4ai-network-dev:
+    driver: bridge
+    name: url_scraper-network-dev
+
+volumes:
+  postgres_data_dev:
+    name: url_scraper-postgres-data-dev

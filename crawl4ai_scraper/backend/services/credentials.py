@@ -1,18 +1,12 @@
-import os
 from typing import Optional
 
-from cryptography.fernet import Fernet
-from dotenv import load_dotenv
 from sqlmodel import Session, select
 
 from ..models import Credentials
-from ..utils.encryption import decrypt_value, encrypt_value, get_encryption_key
+from ..utils.encryption import decrypt_value, encrypt_value, get_fernet
 
-# Load environment variables
-load_dotenv()
-
-# Initialize Fernet for encryption/decryption
-fernet = Fernet(get_encryption_key())
+# Use the encryption module's Fernet instance
+fernet = get_fernet()
 
 
 class CredentialsService:

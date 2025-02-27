@@ -4,9 +4,14 @@ import json
 import logging
 import os
 import re
+import sys
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
+
+# Configure Windows event loop for subprocess support
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 from crawl4ai import AsyncWebCrawler, CacheMode
 from crawl4ai.async_configs import BrowserConfig, CrawlerRunConfig
@@ -137,7 +142,6 @@ class BaseScraper:
                 exclude_external_links=True,
                 wait_until="networkidle",
                 extraction_strategy=None,
-                display_mode="DETAILED",
             )
             logger.info(
                 "No CrawlerRunConfig provided, using default configuration."
@@ -1266,17 +1270,42 @@ class GenericWebScraper(BaseScraper):
         if extraction_config:
             strategy_type = extraction_config.get("type", "llm")
             if strategy_type == "llm":
+                # Default to openrouter and gemini-2.0-flash-exp:free if not specified
+                provider = extraction_config.get("provider", "openrouter")
+                model = extraction_config.get(
+                    "model", "google/gemini-2.0-flash-exp:free"
+                )
+
+                # Combine provider and model if using openrouter
+                if provider == "openrouter" and "/" not in model:
+                    provider_identifier = f"{provider}/{model}"
+                else:
+                    provider_identifier = provider
+
+                # Get API token from config or environment
+                api_token = extraction_config.get("api_key")
+                if not api_token and provider == "openrouter":
+                    api_token = os.getenv("OPENROUTER_API_KEY")
+                    if not api_token:
+                        logger.warning(
+                            "No API token provided for OpenRouter. Check your"
+                            " environment variables."
+                        )
+
                 # LLM-based extraction
                 extraction_strategy = LLMExtractionStrategy(
-                    provider=extraction_config.get("provider"),
-                    api_token=extraction_config.get("api_token"),
+                    provider=provider_identifier,
+                    api_token=api_token,
                     schema=extraction_config.get("schema"),
                     extraction_type=extraction_config.get(
-                        "extraction_type", "schema"
+                        "extraction_type", "block"
                     ),
                     instruction=extraction_config.get(
                         "instruction",
-                        "Extract structured data from the content.",
+                        "Extract the text from the document and retain"
+                        " headings and other structure. Ignore menus and"
+                        " footers. The user most likely wants just the core"
+                        " text of the page.",
                     ),
                     chunk_token_threshold=extraction_config.get(
                         "chunk_token_threshold", 2000
@@ -1290,8 +1319,15 @@ class GenericWebScraper(BaseScraper):
                 )
 
                 if not extraction_strategy.api_token:
+                    logger.error(
+                        "API token is required for LLM-based extraction."
+                        " Provide it in extraction_config or set"
+                        " OPENROUTER_API_KEY environment variable."
+                    )
                     raise ValueError(
-                        "API token is required for LLM-based extraction"
+                        "API token is required for LLM-based extraction."
+                        " Provide it in extraction_config or set"
+                        " OPENROUTER_API_KEY environment variable."
                     )
 
             elif strategy_type == "css":
@@ -1356,45 +1392,136 @@ class GenericWebScraper(BaseScraper):
         )
         logger.info("Initialized bulk crawler with memory-adaptive dispatcher")
 
-    async def scrape_url(self, url: str) -> Optional[Dict[str, Any]]:
+        # Initialize progress tracking
+        self.progress = {
+            "total_urls": 0,
+            "processed_urls": 0,
+            "successful_urls": 0,
+            "failed_urls": 0,
+            "start_time": None,
+            "end_time": None,
+        }
+
+    @staticmethod
+    def validate_url(url: str) -> bool:
+        """Validate if the URL is properly formatted.
+
+        Args:
+            url: URL to validate
+
+        Returns:
+            bool: True if URL is valid, False otherwise
+        """
+        try:
+            result = urlparse(url)
+            return all([result.scheme, result.netloc])
+        except Exception as e:
+            logger.error(f"URL validation error: {str(e)}")
+            return False
+
+    async def scrape_url(
+        self, url: str, max_retries: int = 2
+    ) -> Optional[Dict[str, Any]]:
         """Scrape content from a single URL.
 
         Args:
             url: URL to scrape
+            max_retries: Maximum number of retry attempts for transient errors
 
         Returns:
             Optional[Dict[str, Any]]: Extracted content if successful, None otherwise
         """
         logger.info(f"Starting scrape for URL: {url}")
+
+        # Validate URL
+        if not self.validate_url(url):
+            logger.error(f"Invalid URL format: {url}")
+            return None
+
         if not self.crawler:
             logger.error("Crawler not initialized")
             return None
 
-        try:
-            async with self.crawler as crawler:
-                self.urls.append(url)
-                result = await crawler.arun(url=url, config=self.run_config)
-                self.crawl_result = result
+        # Initialize progress tracking for this URL
+        self.progress["total_urls"] = 1
+        self.progress["processed_urls"] = 0
+        self.progress["successful_urls"] = 0
+        self.progress["failed_urls"] = 0
+        self.progress["start_time"] = datetime.now()
 
-                if not self.get_success():
-                    logger.error(f"Failed to retrieve content from {url}")
-                    if self.get_error_message():
+        # Implement retry logic
+        retry_count = 0
+        last_error = None
+
+        while retry_count <= max_retries:
+            try:
+                async with self.crawler as crawler:
+                    self.urls.append(url)
+                    result = await crawler.arun(
+                        url=url, config=self.run_config
+                    )
+                    self.crawl_result = result
+
+                    if not self.get_success():
+                        error_msg = self.get_error_message() or "Unknown error"
                         logger.error(
-                            f"Error message: {self.get_error_message()}"
+                            f"Failed to retrieve content from {url}:"
+                            f" {error_msg}"
                         )
+                        last_error = error_msg
+                        retry_count += 1
+                        if retry_count <= max_retries:
+                            logger.info(
+                                f"Retrying ({retry_count}/{max_retries})..."
+                            )
+                            await asyncio.sleep(
+                                2 * retry_count
+                            )  # Exponential backoff
+                            continue
+                        else:
+                            self.progress["failed_urls"] += 1
+                            self.progress["processed_urls"] += 1
+                            return None
+
+                    extracted_content = self.get_extracted_content()
+                    if not extracted_content:
+                        logger.warning("No content was extracted")
+                        retry_count += 1
+                        if retry_count <= max_retries:
+                            logger.info(
+                                f"Retrying ({retry_count}/{max_retries})..."
+                            )
+                            await asyncio.sleep(2 * retry_count)
+                            continue
+                        else:
+                            self.progress["failed_urls"] += 1
+                            self.progress["processed_urls"] += 1
+                            return None
+
+                    logger.info("URL scraped and processed successfully")
+                    self.progress["successful_urls"] += 1
+                    self.progress["processed_urls"] += 1
+                    self.progress["end_time"] = datetime.now()
+                    return extracted_content
+
+            except Exception as e:
+                logger.error(f"Error scraping URL {url}: {str(e)}")
+                last_error = str(e)
+                retry_count += 1
+                if retry_count <= max_retries:
+                    logger.info(f"Retrying ({retry_count}/{max_retries})...")
+                    await asyncio.sleep(2 * retry_count)
+                else:
+                    self.progress["failed_urls"] += 1
+                    self.progress["processed_urls"] += 1
+                    self.progress["end_time"] = datetime.now()
                     return None
 
-                extracted_content = self.get_extracted_content()
-                if not extracted_content:
-                    logger.warning("No content was extracted")
-                    return None
-
-                logger.info("URL scraped and processed successfully")
-                return extracted_content
-
-        except Exception as e:
-            logger.error(f"Error scraping URL {url}: {str(e)}")
-            return None
+        # If we get here, all retries failed
+        logger.error(
+            f"All retries failed for URL {url}. Last error: {last_error}"
+        )
+        return None
 
     async def bulk_scrape(
         self,
@@ -1412,7 +1539,28 @@ class GenericWebScraper(BaseScraper):
         Returns:
             List[Any]: List of crawl results
         """
-        logger.info(f"Starting bulk scrape of {len(urls)} URLs")
+        # Validate URLs
+        valid_urls = [url for url in urls if self.validate_url(url)]
+        if len(valid_urls) < len(urls):
+            logger.warning(
+                f"Filtered out {len(urls) - len(valid_urls)} invalid URLs"
+            )
+
+        if not valid_urls:
+            logger.error("No valid URLs to scrape")
+            return []
+
+        logger.info(f"Starting bulk scrape of {len(valid_urls)} URLs")
+
+        # Initialize progress tracking
+        self.progress = {
+            "total_urls": len(valid_urls),
+            "processed_urls": 0,
+            "successful_urls": 0,
+            "failed_urls": 0,
+            "start_time": datetime.now(),
+            "end_time": None,
+        }
 
         if max_retries is not None:
             self.bulk_crawler.dispatcher.rate_limiter.max_retries = max_retries
@@ -1420,13 +1568,32 @@ class GenericWebScraper(BaseScraper):
         try:
             async with self.bulk_crawler as crawler:
                 results = await crawler.arun_many(
-                    urls=urls, config=self.run_config, session_id=session_id
+                    urls=valid_urls,
+                    config=self.run_config,
+                    session_id=session_id,
                 )
-                logger.info(f"Completed bulk scrape of {len(urls)} URLs")
+
+                # Update progress
+                self.progress["processed_urls"] = len(results)
+                self.progress["successful_urls"] = sum(
+                    1 for r in results if getattr(r, "success", False)
+                )
+                self.progress["failed_urls"] = sum(
+                    1 for r in results if not getattr(r, "success", False)
+                )
+                self.progress["end_time"] = datetime.now()
+
+                logger.info(f"Completed bulk scrape of {len(valid_urls)} URLs")
+                logger.info(
+                    f"Success: {self.progress['successful_urls']}, Failed:"
+                    f" {self.progress['failed_urls']}"
+                )
+
                 return results
 
         except Exception as e:
             logger.error(f"Error during bulk scrape: {str(e)}")
+            self.progress["end_time"] = datetime.now()
             raise
 
     async def save_results(
@@ -1465,15 +1632,43 @@ class GenericWebScraper(BaseScraper):
 
                 try:
                     # Save HTML content
-                    if hasattr(result, "cleaned_html"):
+                    if hasattr(result, "cleaned_html") and result.cleaned_html:
                         html_path = os.path.join(
                             self.output_dir, f"{base_filename}.html"
                         )
                         with open(html_path, "w", encoding="utf-8") as f:
                             f.write(result.cleaned_html)
 
-                    # Save extracted content
-                    content = result.get_extracted_content()
+                    # Save markdown content if available
+                    if hasattr(result, "markdown") and result.markdown:
+                        md_path = os.path.join(
+                            self.output_dir, f"{base_filename}.md"
+                        )
+                        with open(md_path, "w", encoding="utf-8") as f:
+                            f.write(result.markdown)
+
+                    # Save screenshot if available
+                    if hasattr(result, "screenshot") and result.screenshot:
+                        screenshot_path = os.path.join(
+                            self.output_dir, f"{base_filename}.png"
+                        )
+                        with open(screenshot_path, "wb") as f:
+                            f.write(result.screenshot)
+
+                    # Save extracted content - fix to properly access content
+                    content = None
+                    if hasattr(result, "extracted_content"):
+                        content = result.extracted_content
+                        # Handle string JSON
+                        if isinstance(content, str):
+                            try:
+                                content = json.loads(content)
+                            except json.JSONDecodeError:
+                                logger.warning(
+                                    "Could not parse extracted_content as"
+                                    f" JSON for {url}"
+                                )
+
                     if content:
                         json_path = os.path.join(
                             self.output_dir, f"{base_filename}.json"
@@ -1515,6 +1710,47 @@ class GenericWebScraper(BaseScraper):
         except Exception as e:
             logger.error(f"Failed to save results: {str(e)}")
             return None
+
+    def get_progress(self) -> Dict[str, Any]:
+        """Get current progress information.
+
+        Returns:
+            Dict[str, Any]: Dictionary containing progress information
+        """
+        if self.progress["start_time"] and not self.progress["end_time"]:
+            elapsed = (
+                datetime.now() - self.progress["start_time"]
+            ).total_seconds()
+        elif self.progress["start_time"] and self.progress["end_time"]:
+            elapsed = (
+                self.progress["end_time"] - self.progress["start_time"]
+            ).total_seconds()
+        else:
+            elapsed = 0
+
+        progress_data = {
+            **self.progress,
+            "elapsed_seconds": elapsed,
+            "percent_complete": (
+                (
+                    self.progress["processed_urls"]
+                    / self.progress["total_urls"]
+                    * 100
+                )
+                if self.progress["total_urls"] > 0
+                else 0
+            ),
+        }
+
+        # Convert datetime objects to strings for JSON serialization
+        if progress_data["start_time"]:
+            progress_data["start_time"] = progress_data[
+                "start_time"
+            ].isoformat()
+        if progress_data["end_time"]:
+            progress_data["end_time"] = progress_data["end_time"].isoformat()
+
+        return progress_data
 
 
 async def main() -> None:
